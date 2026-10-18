@@ -1,0 +1,418 @@
+<div id="ant-perspective-sim">
+  <style>
+    #ant-perspective-sim{width:100%;max-width:680px;margin:auto;color:var(--foreground);font:inherit}
+    #ant-perspective-sim .top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px}
+    #ant-perspective-sim canvas{display:block;width:100%;aspect-ratio:1;border-radius:8px;touch-action:manipulation}
+    #ant-perspective-sim .readout{display:flex;justify-content:space-between;gap:12px;margin:8px 0;color:var(--muted-foreground)}
+    #ant-perspective-sim .viz-controls{margin-top:8px}
+    #ant-perspective-sim .speed{flex:1;min-width:150px}
+    #ant-perspective-sim .speed input{width:100%}
+    #ant-perspective-sim .text-small{color:var(--muted-foreground)}
+    #ant-perspective-sim .choice{min-width:132px}
+  </style>
+  <div class="top"><strong>500 × 500 vakjes</strong><span id="aps-status" class="text-small" aria-live="polite">Gepauzeerd</span></div>
+  <canvas id="aps-canvas" width="500" height="500" role="img" aria-label="De mier tekent eerst willekeurig geplaatste blokken en verbindt daarna alle zichtbare hoeken aan de kant van het middenpunt met perspectieflijnen."></canvas>
+  <div class="readout"><span id="aps-label">Gemaakte blokken</span><span id="aps-progress">0</span></div>
+  <div class="viz-controls">
+    <button class="btn btn-primary" id="aps-start" type="button">▶ Start</button>
+    <button class="btn" id="aps-pause" type="button">Ⅱ Pauze</button>
+    <button class="btn" id="aps-reset" type="button">↻ Reset</button>
+    <button class="btn btn-ghost" id="aps-new" type="button">Nieuwe compositie</button>
+    <label class="form-label choice">Kleuren
+      <select class="form-select" id="aps-palette"><option value="gray">Grijswaarden</option><option value="beige" selected>Beige</option><option value="color">Kleur</option></select>
+    </label>
+    <label class="form-label choice">Daken
+      <select class="form-select" id="aps-roofs"><option value="white">Wit</option><option value="alternate" selected>Afwisselend</option><option value="filled">Ingekleurd</option></select>
+    </label>
+    <label class="form-label speed"><span>Ringen · <span id="aps-rings-value">1</span></span><input class="form-range" id="aps-rings" type="range" min="1" max="5" step="1" value="1"></label>
+    <label class="form-label speed"><span>Snelheid · <span id="aps-speed-value">1.500 stappen/sec</span></span><input class="form-range" id="aps-speed" type="range" min="100" max="8000" step="100" value="1500"></label>
+  </div>
+</div>
+<script>
+(()=>{
+  const root=document.getElementById('ant-perspective-sim');
+  if(!root||root.dataset.ready)return;
+  root.dataset.ready='1';
+  const canvas=root.querySelector('#aps-canvas'),N=500,SCALE=2,center={x:250,y:250};
+  canvas.width=canvas.height=N*SCALE;
+  const ctx=canvas.getContext('2d');ctx.setTransform(SCALE,0,0,SCALE,0,0);
+  const trailCanvas=document.createElement('canvas');trailCanvas.width=trailCanvas.height=N*SCALE;
+  const trailCtx=trailCanvas.getContext('2d');trailCtx.setTransform(SCALE,0,0,SCALE,0,0);
+  const el=id=>root.querySelector('#'+id);
+  let planned=[],commands=[],foregroundFaces=[],built=0,lines=0,expectedLines=0,commandIndex=0,active=null,stepIndex=0;
+  let ant={...center},speed=1500,running=false,lastTime=0,acc=0,phase='blocks';
+  const rand=(a,b)=>Math.floor(a+Math.random()*(b-a+1));
+  const cross=(a,b)=>a.x*b.y-a.y*b.x;
+  function linePoints(a,b){
+    const pts=[],dx=b.x-a.x,dy=b.y-a.y,n=Math.max(Math.abs(dx),Math.abs(dy));
+    for(let i=0;i<=n;i++){const t=n?i/n:0;pts.push({x:Math.round(a.x+dx*t),y:Math.round(a.y+dy*t)});}
+    return pts;
+  }
+  function addLine(a,b,paint=false){commands.push({type:'line',points:linePoints(a,b),paint});}
+  function addFill(points,color){commands.push({type:'fill',points:linePoints(points[0],points[1]).concat(...points.slice(1).map((p,i)=>linePoints(p,points[(i+2)%points.length]).slice(1))),polygon:points,color});}
+  function addEvent(name){commands.push({type:'event',name});}
+  function addTeleport(p){commands.push({type:'teleport',point:p});}
+  function bounds(points){return{x:Math.min(...points.map(p=>p.x)),y:Math.min(...points.map(p=>p.y)),w:Math.max(...points.map(p=>p.x))-Math.min(...points.map(p=>p.x)),h:Math.max(...points.map(p=>p.y))-Math.min(...points.map(p=>p.y))};}
+  function randomShape(scale=1){
+    const type=['square','rect','L'][rand(0,2)],w=Math.round((type==='square'?rand(42,66):rand(46,72))*scale),h=Math.round((type==='square'?w:rand(40,66))*scale);
+    let pts=type==='L'?[{x:0,y:0},{x:w,y:0},{x:w,y:h*.42},{x:w*.45,y:h*.42},{x:w*.45,y:h},{x:0,y:h}]:[{x:0,y:0},{x:w,y:0},{x:w,y:h},{x:0,y:h}];
+    const turn=rand(0,3);
+    pts=pts.map(p=>turn===0?p:turn===1?{x:h-p.y,y:p.x}:turn===2?{x:w-p.x,y:h-p.y}:{x:p.y,y:w-p.x});
+    const minX=Math.min(...pts.map(p=>p.x)),maxX=Math.max(...pts.map(p=>p.x)),minY=Math.min(...pts.map(p=>p.y)),maxY=Math.max(...pts.map(p=>p.y));
+    return{local:pts.map(p=>({x:p.x-minX,y:p.y-minY})),w:maxX-minX,h:maxY-minY};
+  }
+  function roofFeatures(poly){
+    const b=bounds(poly),features=[];
+    for(let item=0;item<rand(1,2);item++){
+      const maxW=Math.max(8,Math.floor(Math.min(14,(b.w-6)*.32))),maxH=Math.max(8,Math.floor(Math.min(13,(b.h-6)*.32)));
+      const w=rand(7,maxW),h=rand(7,maxH),type=['airco','chimney','hatch'][rand(0,2)],depth=type==='chimney'?rand(7,10):rand(4,7);let spot=null;
+      for(let tries=0;tries<180&&!spot;tries++){
+        const x=rand(Math.ceil(b.x+5),Math.floor(b.x+b.w-w-5)),y=rand(Math.ceil(b.y+5),Math.floor(b.y+b.h-h-5));
+        const cx=x+w/2,cy=y+h/2,len=Math.hypot(center.x-cx,center.y-cy)||1,shift={x:(center.x-cx)/len*depth,y:(center.y-cy)/len*depth};
+        const insideFace=(ox,oy)=>[.12,.5,.88].every(tx=>[.12,.5,.88].every(ty=>pointInside({x:x+ox+w*tx,y:y+oy+h*ty},poly)));
+        let fits=insideFace(0,0)&&insideFace(shift.x,shift.y);
+        for(const tx of [0,1])for(const ty of [0,1])for(const t of [.25,.5,.75]){
+          if(!pointInside({x:x+w*tx+shift.x*t,y:y+h*ty+shift.y*t},poly))fits=false;
+        }
+        const clear=features.every(f=>x>=f.x+f.w+3||x+w+3<=f.x||y>=f.y+f.h+3||y+h+3<=f.y);
+        if(fits&&clear)spot={x,y,w,h,type,depth,shift};
+      }
+      if(spot)features.push(spot);
+    }
+    return features;
+  }
+  function makeComposition(){
+    planned=[];const ringCount=+el('aps-rings').value,ringRadii={1:[174],2:[104,202],3:[78,140,202],4:[60,108,156,204],5:[50,88,127,166,205]}[ringCount];
+    for(let ring=0;ring<ringCount;ring++){
+      for(let sector=0;sector<6;sector++){
+        const scale={1:1,2:.9,3:.82,4:.68,5:.58}[ringCount],shape=randomShape(scale),base=2*Math.PI*sector/6+(ring%2)*Math.PI/6;
+        let placed=null;
+        for(let tries=0;tries<300&&!placed;tries++){
+          const angle=base+(Math.random()-.5)*.22,radius=ringRadii[ring]+rand(-8,8);
+          const cx=center.x+Math.cos(angle)*radius,cy=center.y+Math.sin(angle)*radius;
+          const x=Math.round(cx-shape.w/2),y=Math.round(cy-shape.h/2);
+          if(x<12||y<12||x+shape.w>488||y+shape.h>488)continue;
+          const nearX=Math.max(x,Math.min(center.x,x+shape.w)),nearY=Math.max(y,Math.min(center.y,y+shape.h));
+          if(Math.hypot(nearX-center.x,nearY-center.y)<24)continue;
+          const overlap=planned.some(b=>x<b.bounds.x+b.bounds.w+4&&x+shape.w>b.bounds.x-4&&y<b.bounds.y+b.bounds.h+4&&y+shape.h>b.bounds.y-4);
+          if(!overlap)placed={x,y};
+        }
+        if(!placed)continue;
+        const points=shape.local.map(p=>({x:Math.round(placed.x+p.x),y:Math.round(placed.y+p.y)}));
+        planned.push({points,bounds:bounds(points),ring:ring+1,sector,roofs:roofFeatures(points),facade:(sector+ring+rand(0,1))%2?'glass':'windows'});
+      }
+    }
+    buildCommands();
+  }
+  function nearestBoundary(p,poly){
+    let best=null;
+    for(let i=0;i<poly.length;i++){
+      const a=poly[i],b=poly[(i+1)%poly.length],dx=b.x-a.x,dy=b.y-a.y,len=dx*dx+dy*dy;
+      const t=len?Math.max(0,Math.min(1,((p.x-a.x)*dx+(p.y-a.y)*dy)/len)):0;
+      const q={x:a.x+t*dx,y:a.y+t*dy},d=Math.hypot(q.x-p.x,q.y-p.y);
+      if(!best||d<best.d)best={point:q,edge:i,t,d};
+    }
+    return best;
+  }
+  function firstRayHit(target,poly){
+    const ray={x:target.x-center.x,y:target.y-center.y};let best=null;
+    for(let i=0;i<poly.length;i++){
+      const a=poly[i],b=poly[(i+1)%poly.length],edge={x:b.x-a.x,y:b.y-a.y},offset={x:a.x-center.x,y:a.y-center.y},den=cross(ray,edge);
+      if(Math.abs(den)<1e-9)continue;
+      const t=cross(offset,edge)/den,u=cross(offset,ray)/den;
+      if(t>=-1e-8&&t<=1+1e-8&&u>=-1e-8&&u<=1+1e-8&&(!best||t<best.t))best={t,edge:i,point:{x:center.x+ray.x*t,y:center.y+ray.y*t}};
+    }
+    return best;
+  }
+  function boundaryPath(hit,poly,cornerIndex,direction){
+    const path=[hit.point],n=poly.length;let i=direction>0?(hit.edge+1)%n:hit.edge;path.push(poly[i]);
+    for(let guard=0;i!==cornerIndex&&guard<n;guard++){i=(i+direction+n)%n;path.push(poly[i]);}
+    return path;
+  }
+  function pathLength(path){let n=0;for(let i=1;i<path.length;i++)n+=Math.hypot(path[i].x-path[i-1].x,path[i].y-path[i-1].y);return n;}
+  function shortestBoundary(hit,poly,cornerIndex){
+    const f=boundaryPath(hit,poly,cornerIndex,1),b=boundaryPath(hit,poly,cornerIndex,-1);
+    return pathLength(f)<=pathLength(b)?f:b;
+  }
+  function pointInside(point,poly){
+    let inside=false;
+    for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+      const a=poly[i],b=poly[j];
+      if((a.y>point.y)!==(b.y>point.y)&&point.x<(b.x-a.x)*(point.y-a.y)/(b.y-a.y)+a.x)inside=!inside;
+    }
+    return inside;
+  }
+  function cornerFacesCenter(corner,poly){
+    // A corner is visible when the ray from the vanishing point first meets the polygon there.
+    // This exact intersection test avoids missing exposed corners around concave L-shaped blocks.
+    const hit=firstRayHit(corner,poly);
+    if(hit)return hit.t>=1-1e-6;
+    const dx=center.x-corner.x,dy=center.y-corner.y,distance=Math.hypot(dx,dy),samples=Math.min(400,Math.ceil(distance/2));
+    for(let i=1;i<samples;i++)if(pointInside({x:corner.x+dx*i/samples,y:corner.y+dy*i/samples},poly))return false;
+    return true;
+  }
+  function edgeFacesCenter(a,b,poly,edgeIndex){
+    // Test the face itself: one obscured endpoint must not make an otherwise visible side disappear.
+    const midpoint=lerpPoint(a,b,.5),hit=firstRayHit(midpoint,poly);
+    if(hit)return hit.edge===edgeIndex&&hit.t>=1-1e-6;
+    const dx=center.x-midpoint.x,dy=center.y-midpoint.y,distance=Math.hypot(dx,dy),samples=Math.min(400,Math.ceil(distance/2));
+    for(let i=1;i<samples;i++)if(pointInside({x:midpoint.x+dx*i/samples,y:midpoint.y+dy*i/samples},poly))return false;
+    return true;
+  }
+  function segmentHit(a,b,poly){
+    const ray={x:b.x-a.x,y:b.y-a.y};let best=null;
+    for(let i=0;i<poly.length;i++){
+      const p=poly[i],q=poly[(i+1)%poly.length],edge={x:q.x-p.x,y:q.y-p.y},off={x:p.x-a.x,y:p.y-a.y},den=cross(ray,edge);
+      if(Math.abs(den)<1e-9)continue;
+      const t=cross(off,edge)/den,u=cross(off,ray)/den;
+      if(t>1e-5&&t<=1&&u>=-1e-8&&u<=1+1e-8&&(!best||t<best.t))best={t,point:{x:a.x+ray.x*t,y:a.y+ray.y*t}};
+    }
+    return best;
+  }
+  function perspectivePath(a,b,owner){
+    // Keep the exact tested raster path so rounding cannot move its endpoint
+    // across the silhouette after clipping.
+    const path=linePoints(a,b);
+    for(let k=1;k<path.length;k++){
+      if(hiddenByForeground(path[k],owner))
+        return path.slice(0,k);
+    }
+    return path;
+  }
+  function lerpPoint(a,b,t){return{x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t};}
+  function facePoint(a,b,farA,farB,t,u){return lerpPoint(lerpPoint(a,b,u),lerpPoint(farA,farB,u),t);}
+  function pointNearPolygon(point,poly,padding=1){
+    if(pointInside(point,poly))return true;
+    for(let i=0;i<poly.length;i++){
+      const a=poly[i],b=poly[(i+1)%poly.length],dx=b.x-a.x,dy=b.y-a.y,len=dx*dx+dy*dy;
+      const t=len?Math.max(0,Math.min(1,((point.x-a.x)*dx+(point.y-a.y)*dy)/len)):0;
+      if(Math.hypot(point.x-(a.x+t*dx),point.y-(a.y+t*dy))<=padding)return true;
+    }
+    return false;
+  }
+  function hiddenByForeground(point,owner){
+    return (foregroundFaces[owner]||[]).some(poly=>pointInside(point,poly));
+  }
+  function visibleLineParts(a,b,owner){
+    const ray={x:b.x-a.x,y:b.y-a.y},cuts=[0,1];
+    for(let i=0;i<planned.length;i++)if(i!==owner){
+      const poly=planned[i].points;
+      for(let j=0;j<poly.length;j++){
+        const p=poly[j],q=poly[(j+1)%poly.length],edge={x:q.x-p.x,y:q.y-p.y},off={x:p.x-a.x,y:p.y-a.y},den=cross(ray,edge);
+        if(Math.abs(den)<1e-9)continue;
+        const t=cross(off,edge)/den,u=cross(off,ray)/den;
+        if(t>1e-7&&t<1-1e-7&&u>=-1e-8&&u<=1+1e-8)cuts.push(t);
+      }
+    }
+    cuts.sort((x,y)=>x-y);const unique=cuts.filter((t,i)=>!i||t-cuts[i-1]>1e-7),parts=[];
+    for(let i=1;i<unique.length;i++){
+      const t0=unique[i-1],t1=unique[i],mid=lerpPoint(a,b,(t0+t1)/2);
+      if(planned.some((block,index)=>index!==owner&&pointInside(mid,block.points)))continue;
+      const p=lerpPoint(a,b,t0),q=lerpPoint(a,b,t1);
+      // Keep even short visible pieces: dropping them creates gaps at corners.
+      if(Math.hypot(q.x-p.x,q.y-p.y)>.15)parts.push([p,q]);
+    }
+    return parts;
+  }
+  function addFacadeLine(a,b,owner){
+    // Clip the ant's actual raster path against block silhouettes. This also
+    // applies to outlines and roof details, which were previously drawn over
+    // every building after the fills had finished.
+    const path=linePoints(a,b);let visible=[];
+    const flush=()=>{if(visible.length>1)addRasterMeasuredLine(visible,owner);visible=[];};
+    for(const point of path){
+      if(hiddenByForeground(point,owner))flush();
+      else visible.push(point);
+    }
+    flush();
+  }
+  function addRasterMeasuredLine(points,owner=-1){
+    if(points.length<2)return;
+    expectedLines++;commands.push({type:'line',points,paint:true,owner});addEvent('line');
+  }
+  function addMeasuredLine(a,b){
+    if(Math.hypot(b.x-a.x,b.y-a.y)<.15)return;
+    expectedLines++;addLine(a,b,true);addEvent('line');
+  }
+  function drawFacade(owner,a,b,farA,farB,style){
+    const depth=(Math.hypot(farA.x-a.x,farA.y-a.y)+Math.hypot(farB.x-b.x,farB.y-b.y))/2;
+    const cols=Math.max(2,Math.min(5,Math.floor(Math.hypot(b.x-a.x,b.y-a.y)/11)));
+    const rows=Math.max(2,Math.min(8,Math.floor(depth/24)));
+    if(style==='glass'){
+      for(let r=1;r<rows;r++){
+        const p=facePoint(a,b,farA,farB,r/rows,0),q=facePoint(a,b,farA,farB,r/rows,1);
+        addFacadeLine(p,q,owner);
+      }
+      for(let c=1;c<cols;c++){
+        const p=facePoint(a,b,farA,farB,0,c/cols),q=facePoint(a,b,farA,farB,1,c/cols);
+        addFacadeLine(p,q,owner);
+      }
+    }else{
+      for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+        const t0=(r+.16)/rows,t1=(r+.84)/rows,u0=(c+.14)/cols,u1=(c+.86)/cols;
+        const pane=[facePoint(a,b,farA,farB,t0,u0),facePoint(a,b,farA,farB,t0,u1),facePoint(a,b,farA,farB,t1,u1),facePoint(a,b,farA,farB,t1,u0)];
+        if(pane.some((p,i)=>Math.hypot(pane[(i+1)%4].x-p.x,pane[(i+1)%4].y-p.y)<1.7))continue;
+        for(let i=0;i<4;i++)addFacadeLine(pane[i],pane[(i+1)%4],owner);
+      }
+    }
+  }
+  function buildCommands(){
+    commands=[];
+    const palette=el('aps-palette').value,roofMode=el('aps-roofs').value;
+    const gray=['#d9d9d6','#c6c6c2','#eeeeea','#bcbcb8'],beige=['#e6ddcc','#d6cbb8','#f2eadb','#c9bea9'],color=['#d7c6ad','#b9c8c2','#d9b9a8','#b9c4d3','#d6d0b6','#c4b9cf'];
+    const baseFor=b=>(palette==='gray'?gray:palette==='beige'?beige:color)[(b.sector*3+b.ring)% (palette==='color'?6:4)];
+    // Rooftop equipment stays neutral, whatever palette the buildings use.
+    const accents=['#f0f1ef','#d4d8da','#c5cace','#e2e4e4'];
+    const objectFor=(block,index)=>accents[(block.sector+block.ring+index)%accents.length];
+    const glassColor=palette==='gray'?'#f1f1ef':palette==='beige'?'#f5eee0':'#e5edf3';
+    const shade=(hex,factor)=>{const n=parseInt(hex.slice(1),16),r=Math.max(0,Math.min(255,Math.round((n>>16)*factor))),g=Math.max(0,Math.min(255,Math.round(((n>>8)&255)*factor))),bl=Math.max(0,Math.min(255,Math.round((n&255)*factor)));return`rgb(${r},${g},${bl})`;};
+    const distance=b=>Math.hypot(b.bounds.x+b.bounds.w/2-center.x,b.bounds.y+b.bounds.h/2-center.y);
+    const painter=[...planned.keys()].sort((a,b)=>distance(planned[b])-distance(planned[a]));
+    // The colored side faces are part of each building's silhouette too.
+    // Earlier clipping checked only the small end caps, so black strokes could
+    // still cross the long, filled sides. Use the same far-to-near painter
+    // order as the fills and clip each building against the faces painted later.
+    const paintRank=[];painter.forEach((bi,rank)=>paintRank[bi]=rank);
+    foregroundFaces=planned.map((_,owner)=>{
+      const faces=[];
+      for(let rank=paintRank[owner]+1;rank<painter.length;rank++){
+        const block=planned[painter[rank]],poly=block.points;
+        faces.push(poly);
+        for(let i=0;i<poly.length;i++){
+          const j=(i+1)%poly.length;
+          if(edgeFacesCenter(poly[i],poly[j],poly,i))faces.push([poly[i],poly[j],center]);
+        }
+      }
+      return faces;
+    });
+    // Opaque planes are painted from the farthest blocks inward, so later blocks mask them.
+    for(const bi of painter){
+      const block=planned[bi],poly=block.points,base=baseFor(block);
+      for(let i=0;i<poly.length;i++){
+        const j=(i+1)%poly.length;
+        if(!edgeFacesCenter(poly[i],poly[j],poly,i))continue;
+        const mx=(poly[i].x+poly[j].x)/2,my=(poly[i].y+poly[j].y)/2;
+        const factor=(mx<center.x?.70:.93)*(my>center.y? .82:1);
+        addFill([poly[i],poly[j],center],shade(base,factor));
+        const a=poly[i],b=poly[j],farA=center,farB=center;
+        const depth=(Math.hypot(farA.x-a.x,farA.y-a.y)+Math.hypot(farB.x-b.x,farB.y-b.y))/2;
+        const cols=Math.max(2,Math.min(5,Math.floor(Math.hypot(b.x-a.x,b.y-a.y)/11)));
+        const rows=Math.max(2,Math.min(8,Math.floor(depth/24)));
+        if(block.facade==='glass'){
+          for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+            const t0=(r+.035)/rows,t1=(r+.965)/rows,u0=(c+.035)/cols,u1=(c+.965)/cols;
+            addFill([facePoint(a,b,farA,farB,t0,u0),facePoint(a,b,farA,farB,t0,u1),facePoint(a,b,farA,farB,t1,u1),facePoint(a,b,farA,farB,t1,u0)],glassColor);
+          }
+        }else{
+          for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+            const t0=(r+.16)/rows,t1=(r+.84)/rows,u0=(c+.14)/cols,u1=(c+.86)/cols;
+            addFill([facePoint(a,b,farA,farB,t0,u0),facePoint(a,b,farA,farB,t0,u1),facePoint(a,b,farA,farB,t1,u1),facePoint(a,b,farA,farB,t1,u0)],glassColor);
+          }
+        }
+      }
+      const roofFill=roofMode==='white'?'#fff':roofMode==='filled'?shade(base,1.08):((block.sector+block.ring)%2===0?'#fff':shade(base,1.08));
+      addFill(poly,roofFill);
+    }
+    for(let bi=0;bi<planned.length;bi++){
+      const block=planned[bi],poly=block.points,entry=nearestBoundary(center,poly);
+      addLine(center,entry.point,false);
+      const outline=[entry.point];let i=(entry.edge+1)%poly.length;outline.push(poly[i]);
+      while(i!==entry.edge){i=(i+1)%poly.length;outline.push(poly[i]);}
+      outline.push(entry.point);
+      for(let j=1;j<outline.length;j++)addFacadeLine(outline[j-1],outline[j],bi);
+      for(let fi=0;fi<block.roofs.length;fi++){
+        const f=block.roofs[fi],objectColor=objectFor(block,fi);
+        const a={x:f.x,y:f.y},b={x:f.x+f.w,y:f.y},c={x:f.x+f.w,y:f.y+f.h},d={x:f.x,y:f.y+f.h};
+        addFill([a,b,c,d],shade(objectColor,1.06));
+        addFacadeLine(a,b,bi);addFacadeLine(b,c,bi);addFacadeLine(c,d,bi);addFacadeLine(d,a,bi);
+        if(f.type==='airco'){
+          for(let k=1;k<=2;k++){const y=f.y+f.h*k/3;addFacadeLine({x:f.x+2,y},{x:f.x+f.w-2,y},bi);}
+        }else if(f.type==='chimney'){
+          addFacadeLine({x:f.x+2,y:f.y+2},{x:f.x+f.w-2,y:f.y+2},bi);
+          addFacadeLine({x:f.x+f.w-2,y:f.y+2},{x:f.x+f.w-2,y:f.y+f.h-2},bi);
+          addFacadeLine({x:f.x+f.w-2,y:f.y+f.h-2},{x:f.x+2,y:f.y+f.h-2},bi);
+          addFacadeLine({x:f.x+2,y:f.y+f.h-2},{x:f.x+2,y:f.y+2},bi);
+        }else addFacadeLine({x:f.x+2,y:f.y+f.h/2},{x:f.x+f.w-2,y:f.y+f.h/2},bi);
+        const top=[a,b,c,d],base=top.map(p=>({x:p.x+f.shift.x,y:p.y+f.shift.y}));
+        for(let k=0;k<4;k++){addFacadeLine(top[k],base[k],bi);addFacadeLine(base[k],base[(k+1)%4],bi);}
+      }
+      addLine(entry.point,center,false);addEvent('block');
+    }
+    addEvent('perspective');
+    expectedLines=0;
+    for(let bi=0;bi<planned.length;bi++){
+      const poly=planned[bi].points,visible=poly.map(corner=>cornerFacesCenter(corner,poly)),stops=poly.map(p=>p);
+      for(let ci=0;ci<poly.length;ci++)if(visible[ci]){
+        const corner=poly[ci];addTeleport(corner);
+        const path=perspectivePath(corner,center,bi);
+        stops[ci]=path[path.length-1];addRasterMeasuredLine(path,bi);
+      }
+      for(let ei=0;ei<poly.length;ei++){
+        const ni=(ei+1)%poly.length;
+        if(edgeFacesCenter(poly[ei],poly[ni],poly,ei))drawFacade(bi,poly[ei],poly[ni],center,center,planned[bi].facade);
+      }
+    }
+    addEvent('done');
+  }
+  function colors(){
+    const s=getComputedStyle(root);
+    return{bg:s.getPropertyValue('--background').trim()||'transparent',fg:s.getPropertyValue('--foreground').trim()||'#888',border:s.getPropertyValue('--border').trim()||'#888',ant:s.getPropertyValue('--viz-series-1').trim()||s.getPropertyValue('--primary').trim()||'#e0b84c'};
+  }
+  function draw(){
+    const c=colors();ctx.fillStyle=c.bg;ctx.fillRect(0,0,N,N);ctx.strokeStyle=c.border;ctx.globalAlpha=.22;ctx.lineWidth=1;
+    for(let i=50;i<N;i+=50){ctx.beginPath();ctx.moveTo(i,0);ctx.lineTo(i,N);ctx.stroke();ctx.beginPath();ctx.moveTo(0,i);ctx.lineTo(N,i);ctx.stroke();}
+    ctx.globalAlpha=1;ctx.drawImage(trailCanvas,0,0,N,N);
+    ctx.beginPath();ctx.arc(center.x,center.y,13,0,Math.PI*2);ctx.strokeStyle=c.ant;ctx.globalAlpha=.42;ctx.lineWidth=1;ctx.stroke();ctx.globalAlpha=1;
+    ctx.save();ctx.shadowColor=c.ant;ctx.shadowBlur=8;ctx.fillStyle=c.ant;ctx.strokeStyle=c.fg;ctx.lineWidth=1;
+    ctx.beginPath();ctx.arc(ant.x,ant.y,3.5,0,Math.PI*2);ctx.fill();ctx.stroke();ctx.restore();
+  }
+  function status(){
+    const prefix=running?'● ':'';
+    el('aps-status').textContent=phase==='blocks'?prefix+'Blokken tekenen':phase==='perspective'?prefix+'Perspectieflijnen tekenen':phase==='done'?'Klaar':'Gepauzeerd';
+    el('aps-label').textContent=phase==='perspective'?'Getekende lijnen':phase==='done'?'Blokken · lijnen':'Gemaakte blokken';
+    el('aps-progress').textContent=phase==='perspective'?lines.toLocaleString('nl-BE')+' / '+(expectedLines):phase==='done'?built.toLocaleString('nl-BE')+' · '+lines.toLocaleString('nl-BE'):built.toLocaleString('nl-BE')+' / '+planned.length;
+  }
+  function clearRun(){running=false;lastTime=0;acc=0;planned=[];commands=[];built=0;lines=0;expectedLines=0;commandIndex=0;active=null;stepIndex=0;phase='blocks';ant={...center};trailCtx.clearRect(0,0,N,N);status();draw();}
+  function start(){
+    if(phase==='done')clearRun();
+    if(!commands.length){makeComposition();commandIndex=0;active=null;stepIndex=0;phase='blocks';}
+    running=true;lastTime=0;status();
+  }
+  function runEvent(name){
+    if(name==='block')built++;
+    if(name==='perspective')phase='perspective';
+    if(name==='line')lines++;
+    if(name==='done'){phase='done';running=false;}
+    status();
+  }
+  function frame(t){
+    if(!root.isConnected)return;
+    const dt=lastTime?Math.min(.05,(t-lastTime)/1000):.016;lastTime=t;
+    if(running){
+      acc+=speed*dt;let budget=Math.min(1400,Math.floor(acc));acc-=budget;
+      while(budget>0&&running){
+        if(!active){active=commands[commandIndex++];stepIndex=0;if(!active){running=false;phase='done';status();break;}}
+        if(active.type==='event'){runEvent(active.name);active=null;continue;}
+        if(active.type==='teleport'){ant=active.point;active=null;continue;}
+        if(stepIndex>=active.points.length){if(active.type==='fill'){trailCtx.beginPath();active.polygon.forEach((p,i)=>i?trailCtx.lineTo(p.x,p.y):trailCtx.moveTo(p.x,p.y));trailCtx.closePath();trailCtx.fillStyle=active.color;trailCtx.fill();}active=null;continue;}
+        ant=active.points[stepIndex++];if(active.paint){
+          const previous=active.points[Math.max(0,stepIndex-2)];
+          trailCtx.beginPath();trailCtx.moveTo(previous.x,previous.y);trailCtx.lineTo(ant.x,ant.y);
+          trailCtx.strokeStyle='#171715';trailCtx.lineWidth=1;trailCtx.lineCap='round';trailCtx.stroke();
+        }budget--;
+      }
+      draw();
+    }
+    requestAnimationFrame(frame);
+  }
+  el('aps-start').onclick=start;
+  el('aps-pause').onclick=()=>{running=false;status();draw();};
+  el('aps-reset').onclick=clearRun;
+  el('aps-new').onclick=()=>{clearRun();start();};
+  el('aps-speed').oninput=e=>{speed=+e.target.value;el('aps-speed-value').textContent=speed.toLocaleString('nl-BE')+' stappen/sec';};
+  el('aps-rings').oninput=e=>{el('aps-rings-value').textContent=e.target.value;};
+  el('aps-palette').onchange=clearRun;
+  el('aps-roofs').onchange=clearRun;
+  status();draw();requestAnimationFrame(frame);
+})();
+</script>
