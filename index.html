@@ -1,6 +1,6 @@
-<div id="ant-perspective-sim">
+<!doctype html><html lang="nl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>1 vluchtpunt – Teekay & Omnia</title><style>body{margin:12px;background:#fff}</style></head><body><div id="ant-perspective-sim">
   <style>
-    #ant-perspective-sim{width:100%;max-width:680px;margin:auto;color:var(--foreground);font:inherit}
+    #ant-perspective-sim{width:100%;max-width:680px;margin:auto;color:#252525;font:14px system-ui,sans-serif}#ant-perspective-sim button,#ant-perspective-sim select{font:inherit;margin:4px;padding:6px 9px;border:1px solid #aaa;border-radius:8px;background:#eee;color:#202020;cursor:pointer}#ant-perspective-sim .viz-controls{display:flex;flex-wrap:wrap;align-items:center;gap:5px}#ant-perspective-sim label{display:inline-flex;flex-direction:column;color:#333}
     #ant-perspective-sim .top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px}
     #ant-perspective-sim canvas{display:block;width:100%;aspect-ratio:1;border-radius:8px;touch-action:manipulation}
     #ant-perspective-sim .readout{display:flex;justify-content:space-between;gap:12px;margin:8px 0;color:var(--muted-foreground)}
@@ -356,10 +356,10 @@
   }
   function colors(){
     const s=getComputedStyle(root);
-    return{bg:s.getPropertyValue('--background').trim()||'transparent',fg:s.getPropertyValue('--foreground').trim()||'#888',border:s.getPropertyValue('--border').trim()||'#888',ant:s.getPropertyValue('--viz-series-1').trim()||s.getPropertyValue('--primary').trim()||'#e0b84c'};
+    return{bg:'#ffffff',fg:s.getPropertyValue('--foreground').trim()||'#222',border:s.getPropertyValue('--border').trim()||'#888',ant:s.getPropertyValue('--viz-series-1').trim()||s.getPropertyValue('--primary').trim()||'#e0b84c'};
   }
   function draw(){
-    const c=colors();ctx.fillStyle=c.bg;ctx.fillRect(0,0,N,N);ctx.strokeStyle=c.border;ctx.globalAlpha=.22;ctx.lineWidth=1;
+    const c=colors();ctx.clearRect(0,0,N,N);ctx.fillStyle=c.bg;ctx.fillRect(0,0,N,N);ctx.strokeStyle=c.border;ctx.globalAlpha=.22;ctx.lineWidth=1;
     for(let i=50;i<N;i+=50){ctx.beginPath();ctx.moveTo(i,0);ctx.lineTo(i,N);ctx.stroke();ctx.beginPath();ctx.moveTo(0,i);ctx.lineTo(N,i);ctx.stroke();}
     ctx.globalAlpha=1;ctx.drawImage(trailCanvas,0,0,N,N);
     ctx.beginPath();ctx.arc(center.x,center.y,13,0,Math.PI*2);ctx.strokeStyle=c.ant;ctx.globalAlpha=.42;ctx.lineWidth=1;ctx.stroke();ctx.globalAlpha=1;
@@ -416,3 +416,4 @@
   status();draw();requestAnimationFrame(frame);
 })();
 </script>
+</body></html>
